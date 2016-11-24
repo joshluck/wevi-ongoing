@@ -1,0 +1,125 @@
+/*.no-padding {
+  padding: 0;
+}
+*/
+/*
+Responsive textarea
+*/
+textarea {
+   width: 100%;
+}
+
+/*
+Responsive SVG
+*/
+.svg-container {
+    display: inline-block;
+    position: relative;
+    width: 100%;
+    vertical-align: top;
+    overflow: hidden;
+}
+.svg-container.neural-net {
+    padding-top: 60%; /* aspect ratio */
+}
+.svg-container.heatmap {
+    padding-bottom: 70%; /* aspect ratio */
+}
+.svg-container.scatterplot {
+    padding-bottom: 70%; /* aspect ratio */
+}
+.svg-container.tree {
+    /*padding-bottom: 125%; /* aspect ratio */
+}
+.svg-container.output {
+    /*padding-bottom: 100%;*/
+}
+.svg-content-responsive {
+    display: inline-block;
+    position: absolute;
+    top: 10px;
+    left: 0;
+}
+
+.hoverclass {
+    opacity: .5;
+}
+
+/* Tree */
+
+.node text {
+  font: 10px sans-serif;
+}
+
+.node--internal circle {
+  fill: lightgrey;
+  stroke: grey;
+  stroke-width: 2;
+}
+
+.node--internal text {
+  text-shadow: 0 1px 0 #fff, 0 -1px 0 #fff, 1px 0 0 #fff, -1px 0 0 #fff;
+}
+
+.link {
+  fill: none;
+  stroke: #555;
+  stroke-opacity: 0.4;
+  stroke-width: 2px;
+}
+
+/* Neural net */
+
+.collapse {
+  display: none;
+  visibility: hidden;
+}
+
+.collapse.in {
+  display: block;
+  visibility: visible;
+}
+
+.collapsing {
+  position: relative;
+  height: 0;
+  overflow: hidden;
+  -webkit-transition-property: height, visibility;
+  transition-property: height, visibility;
+  -webkit-transition-duration: 0.85s;
+  transition-duration: 0.85s;
+  -webkit-transition-timing-function: ease;
+  transition-timing-function: ease;
+}
+
+.collapsing.width {
+  -webkit-transition-property: width, visibility;
+  transition-property: width, visibility;
+  width: 0;
+  height: auto;
+}
+
+/* BS Extensions */
+
+.btn-smaller {
+    margin-top: 6%;
+    padding: 8px 8px;
+    font-size: 12px;
+    line-height: normal;
+    -webkit-border-radius: 3px;
+       -moz-border-radius: 3px;
+            border-radius: 3px;
+}
+
+.top-buffer {
+  margin-top: 3%;
+}
+
+.row.match-cols {
+    overflow: hidden; 
+}
+
+.row.match-cols [class*="col-"]{
+    margin-bottom: -99999px;
+    padding-bottom: 99999px;
+}
