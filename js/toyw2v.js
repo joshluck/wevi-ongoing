@@ -1,58 +1,74 @@
 $(document).ready(function() {
   set_default_training_data();
   set_default_config();
-  init();
+  global_init();
 
   $("#btn-restart").click(updateAndRestartButtonClick);
   $("#btn-next").click(nextButtonClick);
-  $("#btn-pca").click(updatePCAButtonClick);
+  //$("#btn-pca").click(updatePCAButtonClick);
   $("#btn-next20").click(function(){batchTrain(20)});
   $("#btn-next100").click(function(){batchTrain(100)});
   $("#btn-next500").click(function(){batchTrain(500)});
   $("#btn-learning-rate").click(function(){load_config()});
+  $("#btn-restart-all").click(updateAndRestartButtonClick);
+  $("#btn-create-network").click(generate_network);
 });
 
-function init() {
+function global_init() {
+  modal_active = 1; // remove after debugging
+
   $("#error").empty().hide();
   load_training_data();  // this needs to be loaded first to determine vocab
-  load_config();
-  setup_neural_net();
 
-  /* OLD ORDER
-  //setup_neural_net_svg();
-  //update_neural_net_svg();
-  //setup_heatmap_svg();
-  //update_heatmap_svg();
-  //update_pca();
-  //setup_scatterplot_svg();
-  //update_scatterplot_svg();
-  */
+  load_config(network_array[current_network_index]);
 
-  create_huffman();
-  JSONtree = tree_to_JSON(hufftree.root);
+  for(var i = 0; i < network_array.length; i++) {
+    setup_neural_net(network_array[i]);  
+    create_huffman(network_array[i]);
+  }
+    
+  JSONtree = tree_to_JSON(network_array[0].hufftree.root);
   setup_neural_net_svg();
-  update_neural_net_svg();
+
+  for(var i = 0; i < network_array.length; i++) {
+    update_neural_net_svg(network_array[i]);
+  }
+
+  setup_neural_net_svg();
+  update_neural_net_svg(network_array[current_network_index]);
+  
   setup_heatmap_svg();
   update_heatmap_svg();
-  setup_output();
-  update_output_svg();
+
+  for(var i = 0; i < network_array.length; i++) {
+    setup_output(network_array[i]);
+    update_output_svg(network_array[i]);
+  }
 
   // initial feed-forward
-  do_feed_forward();
+  for(var i = 0; i < network_array.length; i++) {
+    do_feed_forward(network_array[i]);
+  }
+
   update_neural_excite_value();
+  update_id(network_array[current_network_index]);
 }
 
 function set_default_config() {
-  var default_config_obj = {
-    random_state: 1,
-    learning_rate: 0.2,
-  };
-  $('#config-text').html(JSON.stringify(default_config_obj, null, ''));
+  num_active_networks = 0; //global
+  network_array = []; //global
+  current_network_index = 0; //global
+  modal_active = 0; //global
+  excite_flag = false;
+
+  //generate_network();
 
   var preset_HS = [{name: "Yes"}, {name: "No"},];
+  var preset_random_state = [{val: 1}, {val: 2}, {val: 3},];
+  var preset_learning_rate = [{val: 0.1}, {val: 0.2}, {val: 0.3}, {val: 0.4}, {val: 0.5},];
 
+  // first do HS defaults
   var select = d3.select("#sel-HS");
-
   var options = select.selectAll("option")
     .data(preset_HS)
     .enter()
@@ -63,12 +79,38 @@ function set_default_config() {
   select.on("change", function() {
     updateAndRestartButtonClick();
   });
+
+  // now do random_state defaults
+  select = d3.select("#sel-random");
+  options = select.selectAll("option")
+    .data(preset_random_state)
+    .enter()
+    .append("option")
+    .attr("value", function(d) {return d.val})
+    .html(function(d) {return d.val});
+
+  select.on("change", function() {
+    updateAndRestartButtonClick();
+  });
+
+  // now do learning rate defaults
+  select = d3.select("#sel-learning-rate");
+  options = select.selectAll("option")
+    .data(preset_learning_rate)
+    .enter()
+    .append("option")
+    .attr("value", function(d) {return d.val})
+    .html(function(d) {return d.val});
+
+  select.on("change", function() {
+    updateAndRestartButtonClick();
+  }); 
 }
 
-function update_layer_presets(vocab_size) {
+function update_layer_presets(vocab_size, network) {
   var preset_layers = [];
   
-  for(var i = 0; i < vocab_size; i++) {
+  for(var i = 0; i < 5; i++) {
     preset_layers.push(i + 1);
   }
 
@@ -81,30 +123,126 @@ function update_layer_presets(vocab_size) {
     .attr("value", function(d) {return d})
     .html(function(d) {return d});
 
-  hiddenSize = (1 + select.property("selectedIndex"));
+  network.layer_count = (1 + select.property("selectedIndex"));
+
+  hiddenVector = [];
+  for(var i = 0; i < network_array[current_network_index].hidden_size; i++) {
+    hiddenVector.push(0);
+  }
 
   select.on("change", function() {
     updateAndRestartButtonClick();
   });
 }
 
-function load_config() {
-  config_obj = {};  // global
-  var config_json = $("#config-text").val();
-  try{
-    config_obj = JSON.parse(config_json);
-  } catch (e) {
-    show_error("Error parsing the configuration json");
-    show_error('The json: ' + config_json);
-    return;
-  }
-  if (config_obj.hidden_size > vocab.length) {
-    show_error("Error: hidden layer size cannot exceed vocabulary size.");
+function increase_neurons_in_layer(vocab_size, network, layer) {
+  if(network.hiddenNeurons[layer].neuron_count < vocab_size) {
+    ++network.hiddenNeurons[layer].neuron_count;
+
+    var j = network.hiddenNeurons[layer].neuron_count;
+    network.hiddenNeurons[layer].data.push({value: 0, idx: j});
+
+    if((layer + 1) == network.layer_count) {
+      network.hidden_size++;
+    }
   }
 
-  use_hs = (1 - d3.select('#sel-HS').property("selectedIndex"));
+  hiddenVector = [];
+  for(var i = 0; i < network_array[current_network_index].hidden_size; i++) {
+    hiddenVector.push(0);
+  }
 
-  update_layer_presets(vocab.length);
+  updateAndRestartButtonClick();
+}
+
+function decrease_neurons_in_layer(network, layer) {
+  if(network.hiddenNeurons[layer].neuron_count > 1) {
+    --network.hiddenNeurons[layer].neuron_count;
+
+    network.hiddenNeurons[layer].data.pop();
+
+    if((layer + 1) == network.layer_count) {
+      --network.hidden_size;
+    }
+  }
+
+  hiddenVector = [];
+  for(var i = 0; i < network_array[current_network_index].hidden_size; i++) {
+    hiddenVector.push(0);
+  }
+
+  updateAndRestartButtonClick();
+}
+
+function load_config(network) {
+  network.use_hs = (1 - d3.select('#sel-HS').property("selectedIndex"));
+  network.random_state = (1 + d3.select('#sel-random').property("selectedIndex"));
+  network.learning_rate = 0.1 * (1 + d3.select('#sel-learning-rate').property("selectedIndex"));
+
+  update_layer_presets(vocab.length, network);
+  update_id(network);
+}
+
+function update_id(network) {
+  $('#network-id' + network.id).empty()
+    .append("Network " + network.id);
+  $('#network-hs-id' + network.id).empty()
+    .append(network.use_hs);
+  $('#network-random-id' + network.id).empty()
+    .append(network.random_state);
+  $('#network-learningrate-id' + network.id).empty()
+    .append(network.learning_rate);
+  $('#network-layer-id' + network.id).empty()
+    .append(network.layer_count);
+}
+
+function update_hidden_size(network) {
+  network.hidden_size = network.hiddenNeurons[network.hiddenNeurons.length - 1].neuron_count;
+}
+
+function local_update(network) {
+  // only do if more than one neural network
+  if(num_active_networks > 1) {
+    setup_neural_net_svg();
+    update_neural_net_svg(network);
+
+    setup_heatmap_svg();
+    update_heatmap_svg();
+
+    for(var i = 0; i < network_array.length; i++) {
+      update_hidden_size(network_array[i]);
+      setup_output(network_array[i]);
+      update_output_svg(network_array[i]); 
+    }
+
+    update_neural_excite_value();
+  }
+}
+
+function switch_active_network(network) {
+  current_network_index = network.id - 1;
+
+  $('#network-id-header').empty()
+    .append("Network " + network.id + " Control Panel");
+
+  for(var i = 0; i < network_array.length; i++) {
+    $('#network-body-id' + network_array[i].id).css("background", "white");
+  }
+  
+  $('#network-body-id' + network.id).css("background", "lightblue");
+
+  // switch panel to reflect new network
+  $('#sel-random').val(network.random_state);
+  $('#sel-learning-rate').val(network.learning_rate);
+  if(network.use_hs) {
+    $('#sel-HS').val("Yes");
+  } else {
+    $('#sel-HS').val("No");
+  }
+  $('#sel-layers').val(network.layer_count);
+
+  // only do if more than one neural network
+  local_update(network);
 }
 
 function set_default_training_data() {
@@ -161,6 +299,52 @@ function load_training_data() {
   vocab = $.unique(vocab.sort());
 
   expected_word = ""; //global
+
+  if(!num_active_networks) {generate_network();}
+}
+
+// NETWORK OBJECT SECTION //
+
+function Network(id, layers, hs, random, learning) {
+  this.id = id;
+  this.layer_count = layers;
+  this.hidden_size = layers;
+  this.use_hs = hs;
+  this.random_state = random;
+  this.learning_rate = learning;
+}
+
+function generate_network() {
+  if(num_active_networks > 2) {return;}
+  
+  num_active_networks++;
+
+  network_array.push(new Network(num_active_networks, 1, 1, 1, 0.1));
+
+  $('#insert-network' + num_active_networks).after('<div class="col-sm-1 nopadding" id="insert-network' + (num_active_networks + 1) + '">'
+    //+ '<div class="panel panel-default">'
+    //+ '<div class="panel-body" data-parent="#accordion" data-toggle="collapse" data-target="#collapseNetworkOne">'
+    + '<div class="panel panel-default">'
+    + '<div class="panel-heading" id="network-id' + num_active_networks + '"></div>'
+    + '<a href="#" onclick = "switch_active_network(network_array[' + (num_active_networks - 1) + '])">'
+    + '<div class="panel-body" id="network-body-id' + num_active_networks + '">'
+    + '<p id="network-random-id' + num_active_networks + '" style="text-indent: 2em;"></p>'
+    + '<p id="network-learningrate-id' + num_active_networks + '" style="text-indent: 2em;"></p>'    
+    + '<p id="network-hs-id' + num_active_networks + '" style="text-indent: 2em;"></p>'
+    + '<p id="network-layer-id' + num_active_networks + '" style="text-indent: 2em;"></p>'
+    + '</div>'
+    + '<div id="output-vis' + num_active_networks + '"></div>'
+    + '</a>'
+    + '</div>'
+    //+ '</div>'
+    //+ '</div>'
+    + '</div>');
+
+  setup_neural_net(network_array[num_active_networks - 1]);
+  create_huffman(network_array[num_active_networks - 1]);
+  switch_active_network(network_array[num_active_networks - 1]);
+
+  global_init();
 }
 
 // BINARY TREE SECTION //
@@ -181,7 +365,7 @@ function HuffmanTree() {
   this.data = [];
 }
 
-function create_huffman() {
+function create_huffman(network) {
   //create frequency table
   huff_words = [];
   huff_counts = [];
@@ -198,7 +382,7 @@ function create_huffman() {
   }
 
   //create huffman tree
-  hufftree = new HuffmanTree();
+  network.hufftree = new HuffmanTree();
   huff = huff_words.map(function(e, i) {
     return [e, huff_counts[i]];
   });
@@ -213,81 +397,83 @@ function create_huffman() {
 
     if (temp1[0].indexOf('treetemp') !== -1) { //if temp1 IS NOT an actual leaf
       var pos1 = parseInt(temp1[0].replace(/[^0-9\.]/g, ''), 10);
-      var tempnode1 = hufftree.data[pos1];
+      var tempnode1 = network.hufftree.data[pos1];
 
       if (temp2[0].indexOf('treetemp') == -1) { //if temp2 IS an actual leaf
         var tempnode2 = new Node(temp2[0]);
-        var tempparent = new Node('treetemp' + hufftree.data.length);
+        var tempparent = new Node('treetemp' + network.hufftree.data.length);
 
         tempparent.left = tempnode1;
         tempparent.right = tempnode2;
         tempnode1.parent = tempparent;
         tempnode2.parent = tempparent;
 
-        hufftree.data[pos1] = tempnode1;
-        hufftree.data.push(tempnode2);
-        hufftree.data.push(tempparent);
+        network.hufftree.data[pos1] = tempnode1;
+        network.hufftree.data.push(tempnode2);
+        network.hufftree.data.push(tempparent);
       } else { //if temp2 IS NOT an actual leaf
         var pos2 = parseInt(temp2[0].replace(/[^0-9\.]/g, ''), 10);
-        var tempnode2 = hufftree.data[pos2];
-        var tempparent = new Node('treetemp' + hufftree.data.length);
+        var tempnode2 = network.hufftree.data[pos2];
+        var tempparent = new Node('treetemp' + network.hufftree.data.length);
 
         tempparent.left = tempnode1;
         tempparent.right = tempnode2;
         tempnode1.parent = tempparent;
         tempnode2.parent = tempparent;
 
-        hufftree.data[pos1] = tempnode1;
-        hufftree.data[pos2] = tempnode2;
-        hufftree.data.push(tempparent);
+        network.hufftree.data[pos1] = tempnode1;
+        network.hufftree.data[pos2] = tempnode2;
+        network.hufftree.data.push(tempparent);
       }
     } else { //if temp1 IS an actual leaf
       var tempnode1 = new Node(temp1[0]);
 
       if (temp2[0].indexOf('treetemp') == -1) { //if temp2 IS an actual leaf
         var tempnode2 = new Node(temp2[0]);
-        var tempparent = new Node('treetemp' + hufftree.data.length);
+        var tempparent = new Node('treetemp' + network.hufftree.data.length);
 
         tempparent.left = tempnode1;
         tempparent.right = tempnode2;
         tempnode1.parent = tempparent;
         tempnode2.parent = tempparent;
 
-        hufftree.data.push(tempnode1);
-        hufftree.data.push(tempnode2);
-        hufftree.data.push(tempparent);
+        network.hufftree.data.push(tempnode1);
+        network.hufftree.data.push(tempnode2);
+        network.hufftree.data.push(tempparent);
       } else { //if temp2 IS NOT an actual leaf
         var pos2 = parseInt(temp2[0].replace(/[^0-9\.]/g, ''), 10);
-        var tempnode2 = hufftree.data[pos2];
-        var tempparent = new Node('treetemp' + hufftree.data.length);
+        var tempnode2 = network.hufftree.data[pos2];
+        var tempparent = new Node('treetemp' + network.hufftree.data.length);
 
         tempparent.left = tempnode1;
         tempparent.right = tempnode2;
         tempnode1.parent = tempparent;
         tempnode2.parent = tempparent;
 
-        hufftree.data.push(tempnode1);
-        hufftree.data[pos2] = tempnode2;
-        hufftree.data.push(tempparent);
+        network.hufftree.data.push(tempnode1);
+        network.hufftree.data[pos2] = tempnode2;
+        network.hufftree.data.push(tempparent);
       }
     }
 
-    huff.unshift(['treetemp' + (hufftree.data.length - 1), temp1[1] + temp2[1]]); //replace with NON-LEAF node
+    huff.unshift(['treetemp' + (network.hufftree.data.length - 1), temp1[1] + temp2[1]]); //replace with NON-LEAF node
   }
   
-  hufftree.root = hufftree.data[hufftree.data.length - 1];
+  network.outputNodes = [];
+  network.hufftree.root = network.hufftree.data[network.hufftree.data.length - 1];
 
-  hufftree.data.forEach(function(n, i) {
-    for (var j = 0; j < hiddenSize; j++) {
-      n.vect.push(get_random_init_weight(hiddenSize));
+  network.hufftree.data.forEach(function(n, i) {
+    for (var j = 0; j < network.hidden_size; j++) {
+      n.vect.push(get_random_init_weight(network.hidden_size));
       n.gradient.push(0.0);
       n.recent_gradient.push(0.0);
     }
 
     n.index = i;
 
-    outputNodes.push(n);
+    network.outputNodes.push(n);
   });
+  
 }
 
 function tree_to_JSON(w) { //MAKE SURE to call on hufftree.root
@@ -357,21 +543,31 @@ function isCurrentTargetWord(w) {
 function activateNextInput() {
   current_input_idx = (current_input_idx + 1) % input_pairs.length;
   current_input = input_pairs[current_input_idx];
-  inputNeurons.forEach(function(n, i) {
-    n['value'] = isCurrentContextWord(n['word']) ? 1 : 0;
-    n['always_excited'] = isCurrentContextWord(n['word']);
-  });
-  do_feed_forward();  // model
+  
+  for(var i = 0; i < network_array.length; i++) {
+    network_array[i].inputNeurons.forEach(function(n, i) {
+      n['value'] = isCurrentContextWord(n['word']) ? 1 : 0;
+      n['always_excited'] = isCurrentContextWord(n['word']);
+    });
+    
+    do_feed_forward(network_array[i]);  // model  
+  }
+  
   update_neural_excite_value();  // visual
 }
 
 function deactivateCurrentInput() {
   current_input = null;
-  inputNeurons.forEach(function(n, i) {
-    // n['value'] = 0;
-    n['always_excited'] = false;
-  });
-  do_feed_forward();  // model
+
+  for(var i = 0; i < network_array.length; i++) {
+    network_array[i].inputNeurons.forEach(function(n, i) {
+      // n['value'] = 0;
+      n['always_excited'] = false;
+    });
+    
+    do_feed_forward(network_array[i]);  // model  
+  }
+  
   update_neural_excite_value();  // visual
 }
 
@@ -382,27 +578,46 @@ function deactivateCurrentInput() {
 function activateNextInput_modified() {
   current_input_idx = (current_input_idx + 1) % input_pairs.length;
   current_input = input_pairs[current_input_idx];
-  inputNeurons.forEach(function(n, i) {
-    n['value'] = isCurrentContextWord(n['word']) ? 1 : 0;
-    n['always_excited'] = isCurrentContextWord(n['word']);
-  });
-  do_feed_forward();  // model
+
+  for(var i = 0; i < network_array.length; i++) {
+    network_array[i].inputNeurons.forEach(function(n, i) {
+      n['value'] = isCurrentContextWord(n['word']) ? 1 : 0;
+      n['always_excited'] = isCurrentContextWord(n['word']);
+    });
+  }
+
+  for(var i = 0; i < network_array.length; i++) {
+    do_feed_forward(network_array[i]);  // model
+  }
+
   update_neural_excite_value();  // visual
 }
 
 function deactivateCurrentInput_modified() {
   current_input = null;
-  inputNeurons.forEach(function(n, i) {
-    // n['value'] = 0;
-    n['always_excited'] = false;
-  });
-  do_feed_forward();  // model
+
+  for(var i = 0; i < network_array.length; i++) {
+    network_array[i].inputNeurons.forEach(function(n, i) {
+      // n['value'] = 0;
+      n['always_excited'] = false;
+    });
+  }
+
+  for(var i = 0; i < network_array.length; i++) {
+    do_feed_forward(network_array[i]);  // model
+  }
+
   update_neural_excite_value();  // visual
 }
 
 // END OF MODIFICATIONS
 
 
+
+function HiddenNeuronLayer(val) {
+  this.neuron_count = val;
+  this.data = [];
+}
 
 function show_error(e) {
   console.log(e);
@@ -411,38 +626,74 @@ function show_error(e) {
   $('#error').show();
 }
 
-function setup_neural_net() {
-  inputNeurons = [];  // global (same below)
-  outputNeurons = [];
-  hiddenNeurons = [];
+function setup_neural_net(network) {
+  network.inputNeurons = [];  // global (same below)
+  network.outputNeurons = [];
   vocab.forEach(function(word, i) {
-    inputNeurons.push({word: word, value: 0, idx: i});
-    outputNeurons.push({word: word, value: 0, idx: i});
+    network.inputNeurons.push({word: word, value: 0, idx: i});
+    network.outputNeurons.push({word: word, value: 0, idx: i});
   });
-  for (var j = 0; j < hiddenSize; j++) {
-    hiddenNeurons.push({value: 0, idx: j});
+
+  if(network.hiddenNeurons != undefined) {
+    var tempneuroncounts = [];
+    network.hiddenNeurons.forEach(function(n, i) {tempneuroncounts.push(n.neuron_count);})
+  } else {
+    var tempneuroncounts = [];
+    for (var i = 0; i < network.layer_count; i++) {tempneuroncounts.push(0);}
   }
 
+  network.hiddenNeurons = [];
+
+  for (var i = 0; i < network.layer_count; i++) {
+    if(tempneuroncounts[i] != undefined) {network.hiddenNeurons.push(new HiddenNeuronLayer(tempneuroncounts[i]));}
+    else {network.hiddenNeurons.push(new HiddenNeuronLayer(0));}
+
+    if(network.hiddenNeurons[i].neuron_count == 0) {network.hiddenNeurons[i].neuron_count++;}
+
+    for (var j = 0; j < network.hiddenNeurons[i].neuron_count; j++) {
+      network.hiddenNeurons[i].data.push({value: 0, idx: j});
+    }
+  }
+
+  network.hidden_size = network.hiddenNeurons[network.layer_count - 1].neuron_count;
+
   vocabSize = vocab.length;
-  inputEdges = [];
-  outputEdges = [];
-  inputVectors = [];  // keeps references to the same set of underlying objects as inputEdges
-  outputVectors = [];
-  outputNodes = []; // keeps references to hufftree.data, essentially
-  seed_random(config_obj.random_state);  // vector_math.js
+  network.inputEdges = [];
+  network.outputEdges = [];
+  network.inputVectors = [];  // keeps references to the same set of underlying objects as inputEdges
+  network.outputVectors = [];
+  network.hiddenEdges = [];
+  network.hiddenVectors = [];
+  network.outputNodes = []; // keeps references to hufftree.data, essentially
+  network.perplexity = [];
+  seed_random(network.random_state);  // vector_math.js
   for (var i = 0; i < vocabSize; i++) {
     var inVecTmp = [];
     var outVecTmp = [];
-    for (var j = 0; j < hiddenSize; j++) {
-      var inWeightTmp = {source: i, target: j, weight: get_random_init_weight(hiddenSize)};
-      var outWeightTmp = {source: j, target: i, weight: get_random_init_weight(hiddenSize)};
-      inputEdges.push(inWeightTmp);
-      outputEdges.push(outWeightTmp);
+    for (var j = 0; j < network.hiddenNeurons[0].neuron_count; j++) {
+      var inWeightTmp = {source: i, target: j, weight: get_random_init_weight(network.hiddenNeurons[0].neuron_count)};
+      network.inputEdges.push(inWeightTmp);
       inVecTmp.push(inWeightTmp);
+    }
+    for (var j = 0; j < network.hidden_size; j++) {
+      var outWeightTmp = {source: j, target: i, weight: get_random_init_weight(network.hidden_size)};
+      network.outputEdges.push(outWeightTmp);
       outVecTmp.push(outWeightTmp);
     }
-    inputVectors.push(inVecTmp);
-    outputVectors.push(outVecTmp);
+    network.inputVectors.push(inVecTmp);
+    network.outputVectors.push(outVecTmp);
+  }
+  for (var i = 0; i < network.layer_count - 1; i++) {
+    network.hiddenVectors.push([]);
+    for (var j = 0; j < network.hiddenNeurons[i].neuron_count; j++) {
+      var hidVecTmp = [];
+      for (var k = 0; k < network.hiddenNeurons[i + 1].neuron_count; k++) {
+        var hidWeightTmp = {source: j, target: k, weight: get_random_init_weight(network.hiddenNeurons[i].neuron_count)};
+        network.hiddenEdges.push(hidWeightTmp);
+        hidVecTmp.push(hidWeightTmp);
+      }
+      network.hiddenVectors[i].push(hidVecTmp);
+    }
   }
 }
 
@@ -484,7 +735,7 @@ function setup_neural_net_svg() {
       .attr('fill', io_arrow_color());
 }
 
-function update_neural_net_svg() {  
+function update_neural_net_svg(network) {
   var colors = ["#427DA8", "#6998BB", "#91B3CD", "#BAD0E0", 
                 "#E1ECF3", "#FADEE0", "#F2B5BA", "#EA8B92", 
                 "#E2636C", "#DB3B47"];
@@ -492,21 +743,25 @@ function update_neural_net_svg() {
     .domain(d3.range(0, 1, 1 / (colors.length - 1)))
     .range(colors);  // global
 
-  var inputNeuronCX = nn_svg_width * 0.2;
+  var inputNeuronCX = nn_svg_width * 0.1;
   var outputNeuronCX = nn_svg_width - inputNeuronCX;
   var ioNeuronCYMin = nn_svg_height * 0.125;
   var ioNeuronCYInt = (nn_svg_height - 2 * ioNeuronCYMin) / (vocabSize - 1 + 1e-6);
-  var hiddenNeuronCX = nn_svg_width / 2;
+  var hiddenNeuronCX = nn_svg_width / (network.layer_count + 1.5);
+  var hiddenNeuronCXInt = (nn_svg_width - 2 * hiddenNeuronCX) / (network.layer_count + 1.75 + 1e-6);
   var hiddenNeuronCYMin = nn_svg_height * 0.15;
-  var hiddenNeuronCYInt = (nn_svg_height - 2 * hiddenNeuronCYMin) / (hiddenSize - 1 + 1e-6);
+  var hiddenNeuronCYIntInput = (nn_svg_height - 2 * hiddenNeuronCYMin) / (network.hiddenNeurons[0].neuron_count - 1 + 1e-6);
+  var hiddenNeuronCYIntOutput = (nn_svg_height - 2 * hiddenNeuronCYMin) / (network.hidden_size - 1 + 1e-6);
   var neuronRadius = nn_svg_width * 0.015;
   var neuronLabelOffset = neuronRadius * 1.4;
 
-  draw_tree_interface();
+  if(network.use_hs) {
+    draw_tree_interface();
+  }
 
   var inputNeuronElems = nn_svg
     .selectAll("g.input-neuron")
-    .data(inputNeurons)
+    .data(network.inputNeurons)
     .enter()
     .append("g")
     .classed("input-neuron", true)
@@ -524,50 +779,69 @@ function update_neural_net_svg() {
     .attr("y", function (d, i) {return ioNeuronCYMin + ioNeuronCYInt * i})
     .attr("text-anchor", "end");
 
-  d3.selectAll(".node--leaf")
-    .classed("output-neuron", true)
-    .classed("neuron", true);
+  if(network.use_hs) {
+    d3.selectAll(".node--leaf")
+      .classed("output-neuron", true)
+      .classed("neuron", true);
 
-  outputNeuronElems = d3.selectAll(".node--leaf")
-    .datum(function(d) { return {word: d3.select(this).attr("word")}; });
+    network.outputNeuronElems = d3.selectAll(".node--leaf")
+      .datum(function(d) { return {word: d3.select(this).attr("word")}; });
 
-  outputNeuronElems.data(outputNeurons, function(d) {return d['word'];});
+    network.outputNeuronElems.data(network.outputNeurons, function(d) {return d['word'];});
 
-  outputNeuronElems
-    .append("circle");
+    if(network.id == current_network_index + 1) {
+      network.outputNeuronElems
+        .append("circle");
+    }
+  } else {
+    network.outputNeuronElems = nn_svg
+      .selectAll("g.output-neuron")
+      .data(network.outputNeurons)
+      .enter()
+      .append("g")
+      .classed("output-neuron", true)
+      .classed("neuron", true);
 
-  /* ARCHIVED FOR TREE PURPOSE
-  var outputNeuronElems = nn_svg
-    .selectAll("g.output-neuron")
-    .data(outputNeurons)
-    .enter()
-    .append("g")
-    .classed("output-neuron", true)
-    .classed("neuron", true);
+    if(network.id == current_network_index + 1) {
+      network.outputNeuronElems
+        .append("circle")
+        .attr("cx", outputNeuronCX)
+        .attr("cy", function (d, i) {return ioNeuronCYMin + ioNeuronCYInt * i});
 
-  outputNeuronElems
-    .append("circle")
-    .attr("cx", outputNeuronCX)
-    .attr("cy", function (d, i) {return ioNeuronCYMin + ioNeuronCYInt * i});
-
-  outputNeuronElems
-    .append("text")
-    .classed("neuron-label", true)
-    .attr("x", outputNeuronCX + neuronLabelOffset)
-    .attr("y", function (d, i) {return ioNeuronCYMin + ioNeuronCYInt * i})
-    .attr("text-anchor", "start");
-  */ 
+      network.outputNeuronElems
+        .append("text")
+        .classed("neuron-label", true)
+        .attr("x", outputNeuronCX + neuronLabelOffset)
+        .attr("y", function (d, i) {return ioNeuronCYMin + ioNeuronCYInt * i})
+        .attr("text-anchor", "start");
+    }   
+  }
   
 
-  nn_svg.selectAll("g.hidden-neuron")
-    .data(hiddenNeurons)
+  for(var j = 0; j < network.layer_count; j++) {
+    var hiddenNeuronCYInt = (nn_svg_height - 2 * hiddenNeuronCYMin) / (network.hiddenNeurons[j].neuron_count - 1 + 1e-6);
+
+    nn_svg.selectAll("g.hidden-neuron" + j)
+    .data(network.hiddenNeurons[j].data)
     .enter()
     .append("g")
-    .classed("hidden-neuron", true)
+    .classed("hidden-neuron" + j, true)
     .classed("neuron", true)
     .append("circle")
-    .attr("cx", hiddenNeuronCX)
-    .attr("cy", function (d, i) {return hiddenNeuronCYMin + hiddenNeuronCYInt * i;});
+    .attr("cx", hiddenNeuronCX + (j * hiddenNeuronCXInt))
+    .attr("cy", function (d, i) {return hiddenNeuronCYMin + hiddenNeuronCYInt * i;});  
+
+    $('<img src="plus.png" id="hidden-inc-' + j + '"'
+      + 'onclick="increase_neurons_in_layer(' + vocabSize + ',' + 'network_array[' + current_network_index + '], ' + j + ')"'
+      + 'style="position:absolute; top:' + (hiddenNeuronCYMin - 70) + 'px; left:' + (hiddenNeuronCX + j * hiddenNeuronCXInt) * 0.7 + 'px; width:20px; height:20px;">')
+      .appendTo('#neuron-vis > div');
+
+    $('<img src="minus.png" id="hidden-inc-' + j + '"'
+      + 'onclick="decrease_neurons_in_layer(' + 'network_array[' + current_network_index + '], ' + j + ')"'
+      + 'style="position:absolute; top:' + (hiddenNeuronCYMin - 70) + 'px; left:' + ((hiddenNeuronCX + j * hiddenNeuronCXInt) * 0.7 - 30) + 'px; width:20px; height:20px;">')
+      .appendTo('#neuron-vis > div');
+  }
+
 
   d3.selectAll("g.neuron > circle")
     .attr("r", neuronRadius)
@@ -581,7 +855,7 @@ function update_neural_net_svg() {
     .text(function(d) {return d.word});
 
   nn_svg.selectAll("g.input-edge")
-    .data(inputEdges)
+    .data(network.inputEdges)
     .enter()
     .append("g")
     .classed("input-edge", true)
@@ -590,57 +864,107 @@ function update_neural_net_svg() {
     .attr("x1", inputNeuronCX + neuronRadius)
     .attr("x2", hiddenNeuronCX - neuronRadius)
     .attr("y1", function (d) {return ioNeuronCYMin + ioNeuronCYInt * d['source']})
-    .attr("y2", function (d) {return hiddenNeuronCYMin + hiddenNeuronCYInt * d['target']})
-    .attr("stroke", function (d) {return getInputEdgeStrokeColor(d)})
-    .attr("stroke-width", function (d) {return getInputEdgeStrokeWidth(d)});
+    .attr("y2", function (d) {return hiddenNeuronCYMin + hiddenNeuronCYIntInput * d['target']})
+    .attr("stroke", function (d) {return getInputEdgeStrokeColor(network, d)})
+    .attr("stroke-width", function (d) {return getInputEdgeStrokeWidth(network, d)});
 
-  /* ARCHIVED FOR TREE PURPOSE
-  nn_svg.selectAll("g.output-edge")
-    .data(outputEdges)
-    .enter()
-    .append("g")
-    .classed("output-edge", true)
-    .classed("edge", true)
-    .append("line")
-    .attr("x1", hiddenNeuronCX + neuronRadius)
-    .attr("x2", outputNeuronCX - neuronRadius)
-    .attr("y1", function (d) {return hiddenNeuronCYMin + hiddenNeuronCYInt * d['source']})
-    .attr("y2", function (d) {return ioNeuronCYMin + ioNeuronCYInt * d['target']})
-    .attr("stroke", function (d) {return getOutputEdgeStrokeColor(d)})
-    .attr("stroke-width", function (d) {return getOutputEdgeStrokeWidth(d)});
-  */
+  for(var j = 0; j < network.layer_count - 1; j++) {
+    var hiddenNeuronCYInt = (nn_svg_height - 2 * hiddenNeuronCYMin) / (network.hiddenNeurons[j + 1].neuron_count - 1 + 1e-6);
+
+    for(var k = 0; k < network.hiddenNeurons[j].neuron_count; k++) {
+      nn_svg.selectAll("g.hidden-edge" + j + "-" + k)
+        .data(network.hiddenVectors[j][k])
+        .enter()
+        .append("g")
+        .classed("hidden-edge" + j + "-" + k, true)
+        .classed("edge", true)
+        .append("line")
+        .attr("x1", hiddenNeuronCX + j * hiddenNeuronCXInt + neuronRadius)
+        .attr("x2", hiddenNeuronCX + (j + 1) * hiddenNeuronCXInt - neuronRadius)
+        .attr("y1", function (d) {
+          if(j == 0) {
+            return hiddenNeuronCYMin + hiddenNeuronCYIntInput * d['source'];
+          } else {
+            hiddenNeuronCYInt = (nn_svg_height - 2 * hiddenNeuronCYMin) / (network.hiddenNeurons[j].neuron_count - 1 + 1e-6);
+            
+            return hiddenNeuronCYMin + hiddenNeuronCYInt * d['source'];
+          }
+        })
+        .attr("y2", function (d) {
+          hiddenNeuronCYInt = (nn_svg_height - 2 * hiddenNeuronCYMin) / (network.hiddenNeurons[j + 1].neuron_count - 1 + 1e-6);
+
+          return hiddenNeuronCYMin + hiddenNeuronCYInt * d['target']
+        })
+        .attr("stroke", function (d) {return getHiddenEdgeStrokeColor(network, d)})
+        .attr("stroke-width", 5);
+    }
+  }
+
+  if(!network.use_hs) {
+		nn_svg.selectAll("g.output-edge")
+      .data(network.outputEdges)
+      .enter()
+      .append("g")
+      .classed("output-edge", true)
+      .classed("edge", true)
+      .append("line")
+      .attr("x1", hiddenNeuronCX + (j * hiddenNeuronCXInt) + neuronRadius)
+      .attr("x2", outputNeuronCX - neuronRadius)
+      .attr("y1", function (d) {return hiddenNeuronCYMin + hiddenNeuronCYIntOutput * d['source']})
+      .attr("y2", function (d) {return ioNeuronCYMin + ioNeuronCYInt * d['target']})
+      .attr("stroke", function (d) {return getOutputEdgeStrokeColor(network, d)})
+      .attr("stroke-width", function (d) {return getOutputEdgeStrokeWidth(network, d)});    
+  }
 
   // This function needs to be here, because it needs to "see" ioNeuronCYMin and such...
-  draw_input_output_arrows = function() {
-    inputNeurons.forEach(function(n, neuronIdx) {
-      if (isCurrentContextWord(n.word)) {
-        nn_svg.append("line")
-          .classed("nn-io-arrow", true)  // used for erasing
-          .attr("x1", "0")
-          .attr("y1", ioNeuronCYMin + ioNeuronCYInt * neuronIdx)
-          .attr("x2", nn_svg_width * 0.075)
-          .attr("y2", ioNeuronCYMin + ioNeuronCYInt * neuronIdx)
-          .attr("marker-end", "url(#marker_arrow)")
-          .style("stroke", io_arrow_color())
-          .style("stroke-width", "10");
-      }
-    });
+  draw_input_output_arrows = function(network) {
 
-    /* ARCHIVED FOR TREE PURPOSE
-    outputNeurons.forEach(function(n, neuronIdx) {
-      if (isCurrentTargetWord(n.word)) {
-        nn_svg.append("line")
-          .classed("nn-io-arrow", true)  // used for erasing
-          .attr("x1", nn_svg_width)
-          .attr("y1", ioNeuronCYMin + ioNeuronCYInt * neuronIdx)
-          .attr("x2", nn_svg_width * (1-0.075))
-          .attr("y2", ioNeuronCYMin + ioNeuronCYInt * neuronIdx)
-          .attr("marker-end", "url(#marker_arrow)")
-          .style("stroke", io_arrow_color())
-          .style("stroke-width", "10");
-      }
-    });
-    */
+    if(modal_active) {
+      network.inputNeurons.forEach(function(n, neuronIdx) {
+        if (isCurrentContextWord(n.word)) {
+          nn_svg.append("line")
+            .classed("nn-io-arrow", true)  // used for erasing
+            .attr("x1", "0")
+            .attr("y1", ioNeuronCYMin + ioNeuronCYInt * neuronIdx)
+            .attr("x2", nn_svg_width * 0.075)
+            .attr("y2", ioNeuronCYMin + ioNeuronCYInt * neuronIdx)
+            .attr("marker-end", "url(#marker_arrow)")
+            .style("stroke", io_arrow_color())
+            .style("stroke-width", "10");
+        }
+      });
+    } else {
+      network.inputNeurons.forEach(function(n, neuronIdx) {
+        if (isCurrentContextWord(n.word)) {
+          nn_svg.append("line")
+            .classed("nn-io-arrow", true)
+            .attr("x1", "0")
+            .attr("y1", ioNeuronCYMin + ioNeuronCYInt * neuronIdx)
+            .attr("x2", nn_svg_width * 0.075)
+            .attr("y2", nn_svg_height * 0.5)
+            .attr("marker-end", "url(#marker_arrow)")
+            .style("stroke", io_arrow_color())
+            .style("stroke-width", "10");
+        }
+      });
+    }
+
+    if(!network.use_hs) {
+      network.outputNeurons.forEach(function(n, neuronIdx) {
+        if (isCurrentTargetWord(n.word)) {
+          nn_svg.append("line")
+            .classed("nn-io-arrow", true)  // used for erasing
+            .attr("x1", nn_svg_width)
+            .attr("y1", ioNeuronCYMin + ioNeuronCYInt * neuronIdx)
+            .attr("x2", nn_svg_width * (1-0.075))
+            .attr("y2", ioNeuronCYMin + ioNeuronCYInt * neuronIdx)
+            .attr("marker-end", "url(#marker_arrow)")
+            .style("stroke", io_arrow_color())
+            .style("stroke-width", "10");
+        }
+      });
+    }
+
   };
 
   // Set up hover behavior
@@ -648,25 +972,79 @@ function update_neural_net_svg() {
     .on("mouseover", mouseHoverInputNeuron)
     .on("mouseout", mouseOutInputNeuron)
     .on("click", mouseClickInputNeuron);
+
+  d3.selectAll("#black-box")
+    .on("click", setup_hidden_vis);
+
+  $("#hidden-vis").on('hide.bs.modal', clear_hidden_vis);
 }
 
-function getInputEdgeStrokeWidth(edge) {
-  return isNeuronExcited(inputNeurons[edge.source]) ? 5 : 1;
+function setup_hidden_vis() {
+  modal_active = 1;
+  //update neuron-vis
+  setup_neural_net_svg();
+  update_neural_net_svg(network_array[current_network_index]);
+  setup_output(network_array[current_network_index]);
+  update_output_svg(network_array[current_network_index]);
+  update_neural_excite_value();
+
+  $("#hidden-vis-clone").empty();
+  $("#neuron-vis").clone().appendTo("#hidden-vis-clone");
+  $("#neuron-vis").empty();
+  $("#control-vis").clone().appendTo("#control-vis-clone");
 }
 
-function getInputEdgeStrokeColor(edge) {
-  if (isNeuronExcited(inputNeurons[edge.source])) return exciteValueToColor(edge.weight);
-  else return "grey";
+function clear_hidden_vis() {
+  $("#control-vis-clone").empty();
+  $("#hidden-vis-clone").empty();
+  modal_active = 0;
+
+  //update neuron-vis
+  setup_neural_net_svg();
+  update_neural_net_svg(network_array[current_network_index]);
+  setup_output(network_array[current_network_index]);
+  update_output_svg(network_array[current_network_index]);
+  update_neural_excite_value();
 }
 
-function getOutputEdgeStrokeWidth(edge) {
-  return isNeuronExcited(outputNeurons[edge.target]) ? 5 : 1;
+function getInputEdgeStrokeWidth(network, edge) {
+  if(excite_flag) {
+    return isNeuronExcited(network.inputNeurons[edge.source]) ? 5 : 0;  
+  } else {
+    return 5;
+  }
 }
 
-function getOutputEdgeStrokeColor(edge) {
-  if (isNeuronExcited(outputNeurons[edge.target])) return exciteValueToColor(edge.weight * outputNeurons[edge.target].value);
-  else return "grey";
+function getInputEdgeStrokeColor(network, edge) {
+  if(excite_flag) {
+    if (isNeuronExcited(network.inputNeurons[edge.source])) return exciteValueToColor(edge.weight);
+    else return "grey";  
+  } else {
+    return exciteValueToColor(edge.weight);
+  }
 }
+
+function getHiddenEdgeStrokeColor(network, edge) {
+  return exciteValueToColor(edge.weight);
+}
+
+function getOutputEdgeStrokeWidth(network, edge) {
+  if(excite_flag) {
+    return isNeuronExcited(network.outputNeurons[edge.target]) ? 5 : 0;  
+  } else {
+    return 5;
+  }
+}
+
+function getOutputEdgeStrokeColor(network, edge) {
+  if (excite_flag) {
+    if (isNeuronExcited(network.outputNeurons[edge.target])) return exciteValueToColor(edge.weight * network.outputNeurons[edge.target].value);
+    else return "grey";  
+  } else {
+    return exciteValueToColor(edge.weight * network.outputNeurons[edge.target].value);
+  }  
+}
+
 
 function isNeuronExcited(neuron) {
   if (! ('value' in neuron)) {
@@ -680,17 +1058,19 @@ function isNeuronExcited(neuron) {
   Only re-color some elements, without changing the neural-network structure.
 */
 function update_neural_excite_value() {
+  var current_network = network_array[current_network_index];
+
   update_internal_nodes();
   d3.selectAll("g.neuron > circle")
     .attr("fill", function(d) {return exciteValueToColor(d['value'])});
   d3.selectAll(".node--internal > circle")
   	.style("fill", function(d) {return exciteValueToColor(d['value'])});
   nn_svg.selectAll("g.input-edge > line")
-    .attr("stroke-width", function(d) {return getInputEdgeStrokeWidth(d)})
-    .attr("stroke", function(d) {return getInputEdgeStrokeColor(d)});
+    .attr("stroke-width", function(d) {return getInputEdgeStrokeWidth(current_network, d)})
+    .attr("stroke", function(d) {return getInputEdgeStrokeColor(current_network, d)});
   nn_svg.selectAll("g.output-edge > line")
-    .attr("stroke-width", function(d) {return getOutputEdgeStrokeWidth(d)})
-    .attr("stroke", function(d) {return getOutputEdgeStrokeColor(d)});
+    .attr("stroke-width", function(d) {return getOutputEdgeStrokeWidth(current_network, d)})
+    .attr("stroke", function(d) {return getOutputEdgeStrokeColor(current_network, d)});
 }
 
 // Color of arrows indicating context/target words
@@ -704,19 +1084,19 @@ function erase_input_output_arrows() {
 
 // Helper function
 // Actual method implemented in vector_math.js
-function do_feed_forward() {
-  if(use_hs) {
-    feedforward_with_HS(inputVectors, outputVectors, inputNeurons, hiddenNeurons, outputNeurons, outputNodes);
+function do_feed_forward(network) {
+  if(network.use_hs) {
+    feedforward_with_HS(network.inputVectors, network.outputVectors, network.inputNeurons, network.hiddenNeurons, network.outputNeurons, network.outputNodes, network.hiddenVectors, network.layer_count);
   } else {
-    feedforward(inputVectors, outputVectors, inputNeurons, hiddenNeurons, outputNeurons);
+    feedforward(network.inputVectors, network.outputVectors, network.inputNeurons, network.hiddenNeurons, network.outputNeurons, network.hiddenVectors, network.layer_count);
   }
 }
 
 // Helper function
 // Actual method implemented in vector_math.js
-function do_backpropagate() {
+function do_backpropagate(network) {
   expectedOutput = [];
-  outputNeurons.forEach(function(n) {
+  network.outputNeurons.forEach(function(n) {
     if (isCurrentTargetWord(n.word)) {
       expectedOutput.push(1);
 
@@ -729,25 +1109,31 @@ function do_backpropagate() {
     }
   });
 
-  if (use_hs) {
-    backpropagate_with_HS(inputVectors, outputVectors, inputNeurons, hiddenNeurons, outputNeurons, expectedOutput, outputNodes);
+  if (network.use_hs) {
+    backpropagate_with_HS(network.inputVectors, network.outputVectors, network.inputNeurons, network.hiddenNeurons, network.outputNeurons, expectedOutput, network.outputNodes, network.hiddenVectors, network.layer_count);
   } else {
-    backpropagate(inputVectors, outputVectors, inputNeurons, hiddenNeurons, outputNeurons, expectedOutput);  
+    backpropagate(network.inputVectors, network.outputVectors, network.inputNeurons, network.hiddenNeurons, network.outputNeurons, expectedOutput, network.hiddenVectors, network.layer_count);  
   }
 }
 
 // Helper function
 // Actual method implemented in vector_math.js
-function do_apply_gradients() {
-  if (use_hs) {
-    apply_gradient_with_HS(inputVectors, outputVectors, outputNodes, getCurrentLearningRate());
+function do_apply_gradients(network) {
+  if (network.use_hs) {
+    apply_gradient_with_HS(network.inputVectors, network.outputVectors, network.outputNodes, getCurrentLearningRate(network), network.hidden_size, network.hiddenVectors, network.layer_count);
   } else {
-    apply_gradient(inputVectors, outputVectors, getCurrentLearningRate());  
+    apply_gradient(network.inputVectors, network.outputVectors, getCurrentLearningRate(network), network.hiddenVectors, network.layer_count);  
   }
+
+  //increase # of iterations
+  var current_iterations = parseInt($('#iters').text());
+
+  $('#iters').empty();
+  $('#iters').append(current_iterations + 1);
 }
 
-function getCurrentLearningRate() {
-  return config_obj['learning_rate'];
+function getCurrentLearningRate(network) {
+  return network.learning_rate;
 }
 
 // Input: neural excitement level, can be positive, negative
@@ -763,14 +1149,21 @@ function exciteValueToColor(x) {
 
 function mouseHoverInputNeuron(d) {
   // Excite this neuron, inhibit others; ignore always-excited ones
-  inputNeurons.forEach(function(n,i) {
-    if (('always_excited' in n) && n['always_excited']) {
-      return;
-    }
-    if (i == d.idx) n['value'] = 1;
-    else n['value'] = 0;
+  network_array.forEach(function(n,i) {
+    n.inputNeurons.forEach(function(n,i) {
+      if (('always_excited' in n) && n['always_excited']) {
+        return;
+      }
+      if (i == d.idx) n['value'] = 1;
+      else n['value'] = 0;
+   });
   });
-  do_feed_forward();
+
+  // set excited flag
+  excite_flag = true;
+
+  for(var i = 0; i < network_array.length; i++) {do_feed_forward(network_array[i]);}
+
   update_neural_excite_value();
 
   // also highlight input/output vectors in heatmap
@@ -786,12 +1179,32 @@ function mouseHoverInputNeuron(d) {
 }
 
 function mouseOutInputNeuron(d) {
+  var excited_count = 0;
+
   // Inhibit all neurons, except always-excited ones
-  inputNeurons.forEach(function(n,i) {
-    if (('always_excited' in n) && n['always_excited']) return;
-    n['value'] = 0;
+  network_array.forEach(function(n,i) {
+    n.inputNeurons.forEach(function(n,i) {
+      if (('always_excited' in n) && n['always_excited']) {
+        return;
+      }
+
+      n['value'] = 0;
+    });
   });
-  do_feed_forward();
+
+  // reset excited flag
+  network_array[current_network_index].inputNeurons.forEach(function(n, i) {
+    if (('always_excited' in n) && (n['always_excited'])) {
+      ++excited_count;
+    }
+  });
+
+  if(!excited_count) {
+    excite_flag = false;
+  }
+
+  for(var i = 0; i < network_array.length; i++) {do_feed_forward(network_array[i]);}
+
   update_neural_excite_value();
  
   hmap_svg
@@ -807,9 +1220,19 @@ function mouseOutInputNeuron(d) {
 
 function mouseClickInputNeuron(d) {
   if (isCurrentContextWord(d['word'])) return;
-  var n = inputNeurons[d['idx']];
-  if (('always_excited' in n) && n['always_excited']) n['always_excited'] = false;
-  else n['always_excited'] = true;
+
+  for(var i = 0; i < network_array.length; i++) {
+    var n = network_array[i].inputNeurons[d['idx']];
+    
+    if (('always_excited' in n) && n['always_excited']) n['always_excited'] = false;
+    else n['always_excited'] = true;  
+  }
+
+  excite_flag = true;
+
+  for(var i = 0; i < network_array.length; i++) {do_feed_forward(network_array[i]);}
+
+  update_neural_excite_value();
 }
 
 function setup_heatmap_svg() {
@@ -830,6 +1253,8 @@ function setup_heatmap_svg() {
 }
 
 function update_heatmap_svg() {
+  var current_network = network_array[current_network_index];
+
   var inputCellBaseX = 0.15 * hmap_svg_width;
   var ioCellBaseY = 0.1 * hmap_svg_height;
   var matrixPadding = 0.05 * hmap_svg_width;
@@ -838,7 +1263,7 @@ function update_heatmap_svg() {
   var matrixWidth = (hmap_svg_width - inputCellBaseX - matrixPadding - matrixRightMargin) / 2;
   var outputCellBaseX = inputCellBaseX + matrixWidth + matrixPadding;
   var matrixHeight = hmap_svg_height - ioCellBaseY - matrixBottomMargin;
-  var cellWidth = matrixWidth / hiddenSize;
+  var cellWidth = matrixWidth / current_network.hidden_size;
   var cellHeight = matrixHeight / vocabSize;
   var cellFillWidth = 0.95 * cellWidth;
   var cellFillHeight = 0.95 * cellHeight;
@@ -849,7 +1274,7 @@ function update_heatmap_svg() {
 
   var inputWeightElems = hmap_svg
     .selectAll("g.hmap-input-cell")
-    .data(inputEdges)
+    .data(current_network.inputEdges)
     .enter()
     .append("g")
     .classed("hmap-input-cell", true)
@@ -861,10 +1286,10 @@ function update_heatmap_svg() {
     .attr("height", cellFillHeight)
     .attr("id", function (d) {return 'heatin' + d['source']});
 
-  if(!use_hs) {
+  if(!current_network.use_hs) {
   var outputWeightElems = hmap_svg
     .selectAll("g.hmap-output-cell")
-    .data(outputEdges)
+    .data(current_network.outputEdges)
     .enter()
     .append("g")
     .classed("hmap-output-cell", true)
@@ -883,7 +1308,7 @@ function update_heatmap_svg() {
 
   hmap_svg
     .selectAll("text.hmap-vocab-label")
-    .data(inputNeurons)
+    .data(current_network.inputNeurons)
     .enter()
     .append("text")
     .classed("hmap-vocab-label", true)
@@ -895,7 +1320,7 @@ function update_heatmap_svg() {
     .attr("id", function(d) {return 'hmap' + d.word})
     .style("font-size", 35);
 
-  if(!use_hs) {
+  if(!current_network.use_hs) {
     var heatmap_labels = [
       {text: "Input Vector", x: inputHeaderCX, y: ioHeaderBaseY},
       {text: "Output Vector", x: outputHeaderCX, y: ioHeaderBaseY},
@@ -921,10 +1346,15 @@ function update_heatmap_svg() {
     .attr("alignment-baseline", "ideographic");
 }
 
+
 /*
   Updates PCA model using current input weights.
   PCA implemented in pca.js
+
+  CURRENTLY ARCHIVED
 */
+
+/*
 function update_pca() {
   var inputWeightMatrix = []
   inputVectors.forEach(function(v) {
@@ -1074,36 +1504,60 @@ function updatePCAButtonClick() {
   update_pca();
   update_scatterplot_svg();
 }
+*/
+
 
 function nextButtonClick() {
   if (current_input) {
     deactivateCurrentInput();
     erase_input_output_arrows();
-    do_apply_gradients();  // subtract gradients from weights
+    
+    for(var i = 0; i < network_array.length; i++) {
+      do_apply_gradients(network_array[i]);  // subtract gradients from weights  
+    }
+
+    compute_perplexity();
+    
     update_heatmap_svg();
     //update_scatterplot_svg();
   } else {
     activateNextInput();
-    draw_input_output_arrows();
-    do_backpropagate();  // compute gradients (without updating weights)
+    draw_input_output_arrows(network_array[current_network_index]);
+
+    for(var i = 0; i < network_array.length; i++) {
+      do_backpropagate(network_array[i]);  // compute gradients (without updating weights)
+    }
   }
 }
 
 function updateAndRestartButtonClick() {
-  init();
+  //console.log("updated");
+  $('#iters').empty();
+  $('#iters').append("0");
+  global_init();
 }
 
 // Train in batch
 function batchTrain(numIter) {
   // Step 1:
   activateNextInput_modified();
-  draw_input_output_arrows();
+  draw_input_output_arrows(network_array[current_network_index]);
   setTimeout(function() {
-    do_backpropagate();
+
+    for(var i = 0; i < network_array.length; i++) {
+      do_backpropagate(network_array[i]);
+    }
+
     // Step 2:
     deactivateCurrentInput_modified();
     erase_input_output_arrows();
-    do_apply_gradients();
+
+    for(var i = 0; i < network_array.length; i++) {
+      do_apply_gradients(network_array[i]);
+    }
+
+    compute_perplexity();
+
     update_heatmap_svg();
     //update_scatterplot_svg();
     if (numIter == 1) return;
@@ -1149,7 +1603,7 @@ function addColorPalette() {
 }
 
 
-// NEW FUNCTIONS for determining difference between HS and Original
+// NEW FUNCTIONS for determining difference between HS and Original //
 
 function vector_average(vec) {
 	var tempsum = 0;
@@ -1199,6 +1653,7 @@ function cosine_similarity(vec1, vec2) {
   return (dot_product(vec1, vec2) / (euclidean_norm(vec1) * euclidean_norm(vec2)));
 }
 
+/*
 function get_prob_vector(word, hs_option, seed) {
   // first, train model
   var modified_config_obj = {
@@ -1209,7 +1664,7 @@ function get_prob_vector(word, hs_option, seed) {
   };
   $('#config-text').html(JSON.stringify(modified_config_obj, null, ''));
 
-  init();
+  global_init();
   var training_sessions = 500;
 
   for (var i = 0; i < training_sessions; i++) {
@@ -1278,6 +1733,7 @@ function get_distance_distribution(vocab, iters) {
 
   return distances;
 }
+*/
 
 // NEW FUNCTIONS for tree structure/visualization //
 
@@ -1437,7 +1893,7 @@ function update_internal_children(node, tree_root) {
 
 function update_internal_helper(node) {
 	var tempnode = this.__data__;
-	var temproot = hufftree.root;
+	var temproot = network_array[current_network_index].hufftree.root;
 
 	tempnode.vect = temproot.vect;
 	tempnode.value = dot_product(tempnode.vect, hiddenVector) / 5; //make it a little less dramatic
@@ -1457,6 +1913,13 @@ function update_internal_helper(node) {
 }
 
 function update_internal_nodes() {
+  var current_network = network_array[current_network_index];
+  hiddenVector = [];
+
+  for(var i = 0; i < current_network.hiddenNeurons[current_network.layer_count - 1].neuron_count; i++) {
+    hiddenVector.push(current_network.hiddenNeurons[current_network.layer_count - 1].data[i].value);
+  }
+
 	d3.select(".node--internal").each(update_internal_helper);
 }
 
@@ -1466,17 +1929,17 @@ function init_node_vect(node) {
 	node.vect = [];
 	node.value = 0;
 
-	for (var i = 0; i < hiddenSize; i++) {
+	for (var i = 0; i < network_array[current_network_index].hidden_size; i++) {
 		node.vect[i] = 0;
     hiddenVector[i] = 0;
 	}
 }
 
-function setup_output() {
+function setup_output(network) {
   output_svg_width = 200;  // view box, not physical
   output_svg_height = 400;  // W/H ratio should match padding-bottom in wevi.css
-  d3.select('div#output-vis > *').remove();
-  output_svg = d3.select('div#output-vis')
+  d3.select('div#output-vis' + network.id + ' > *').remove();
+  output_svg = d3.select('div#output-vis' + network.id)
    .append("div")
    //.classed("svg-container", true) //container class to make it responsive
    //.classed("output", true)
@@ -1489,19 +1952,53 @@ function setup_output() {
    //class to make it responsive
    //.classed("svg-content-responsive", true)
    //.classed("output", true);  // for picking up svg from outside
-}
 
-function update_output_svg() { 
-  var inputNeuronCX = output_svg_width * 0.5;
-  var outputNeuronCX = output_svg_width - inputNeuronCX;
-  var ioNeuronCYMin = output_svg_height * 0.125;
-  var ioNeuronCYInt = (output_svg_height - 5 * ioNeuronCYMin) / (vocabSize - 1 + 1e-6);
+  var inputNeuronCX = output_svg_width * 0.44;
+  var ioNeuronCYMin = output_svg_height * 0.10;
+  var ioNeuronCYInt = (output_svg_height - 6.5 * ioNeuronCYMin) / (vocabSize - 1 + 1e-6);
   var neuronRadius = output_svg_width * 0.045;
   var neuronLabelOffset = neuronRadius * 2;
 
-  tabOutputNeurons = output_svg
+  d3.select('#output-vis0 > *').remove();
+  general_output_svg = d3.select('#output-vis0')
+    .append("div")
+    .append("svg")
+    .attr("width", output_svg_width)
+    .attr("height", output_svg_height);
+
+  var general_tabOutputNeurons = general_output_svg
     .selectAll("g.output-neuron")
-    .data(outputNeuronElems.data())
+    //.data(network.outputNeuronElems.data().slice(0, vocabSize))
+    .data(network.outputNeurons)
+    .enter()
+    .append("g")
+    .classed("output-neuron", true)
+    .classed("neuron", true);
+
+ general_tabOutputNeurons
+  .append("text")
+  .classed("neuron-label", true)
+  .attr("x", inputNeuronCX * .8)
+  .attr("y", function (d, i) {return ioNeuronCYMin + ioNeuronCYInt * 2 * i})
+  .attr("text-anchor", "end");
+
+  general_output_svg.selectAll(".neuron-label")
+    .attr("alignment-baseline", "middle")
+    .style("font-size", 16)
+    .text(function(d) {return d.word});
+}
+
+function update_output_svg(network) { 
+  var inputNeuronCX = output_svg_width * 0.25;
+  var ioNeuronCYMin = output_svg_height * 0.10;
+  var ioNeuronCYInt = (output_svg_height - 6.5 * ioNeuronCYMin) / (vocabSize - 1 + 1e-6);
+  var neuronRadius = output_svg_width * 0.045;
+  var neuronLabelOffset = neuronRadius * 2;
+
+  var tabOutputNeurons = output_svg
+    .selectAll("g.output-neuron")
+    //.data(network.outputNeuronElems.data().slice(0, vocabSize))
+    .data(network.outputNeurons)
     .enter()
     .append("g")
     .classed("output-neuron", true)
@@ -1518,6 +2015,7 @@ function update_output_svg() {
     .attr("stroke", "grey")
     .attr("fill", function(d) {return numToColor(0.5);});
 
+/*
  tabOutputNeurons
     .append("text")
     .classed("neuron-label", true)
@@ -1527,6 +2025,58 @@ function update_output_svg() {
 
   output_svg.selectAll(".neuron-label")
     .attr("alignment-baseline", "middle")
-    .style("font-size", 18)
+    .style("font-size", 16)
     .text(function(d) {return d.word});
+*/
+}
+
+function compute_perplexity() {
+
+  var current_neuron_idx = 0;
+
+  temp_prob = [];
+
+  for(var i = 0; i < network_array.length; i++) {
+    temp_prob.push(1);
+  }
+
+  for(var current_neuron_idx = 0; current_neuron_idx < vocabSize - 1; current_neuron_idx++) {
+    
+    // Excite neurons to get proper probabilities
+    network_array.forEach(function(n,i) {
+      n.inputNeurons.forEach(function(n,i) {
+        if (('always_excited' in n) && n['always_excited']) {
+          return;
+        }
+        if (i == current_neuron_idx) n['value'] = 1;
+        else n['value'] = 0;
+     });
+    });
+
+    for(var i = 0; i < network_array.length; i++) {do_feed_forward(network_array[i]);}
+
+    // Grab probability
+    for(var i = 0; i < network_array.length; i++) {
+      temp_prob[i] *= network_array[i].outputNeurons[current_neuron_idx + 1]['value'];
+    } 
+
+  }
+
+  // Inhibit neurons
+  network_array.forEach(function(n,i) {
+    n.inputNeurons.forEach(function(n,i) {
+      if (('always_excited' in n) && n['always_excited']) return;
+      n['value'] = 0;
+    });
+  });
+
+  for(var i = 0; i < network_array.length; i++) {do_feed_forward(network_array[i]);}
+
+  update_neural_excite_value();
+
+  // Update perplexity
+  for(var i = 0; i < network_array.length; i++) {
+    network_array[i].perplexity.push(Math.pow(temp_prob[i], (-1 * Math.pow(vocabSize, -1))));
+  }
+
 }

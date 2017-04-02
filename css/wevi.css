@@ -45,6 +45,11 @@ Responsive SVG
     opacity: .5;
 }
 
+.nopadding {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
 /* Tree */
 
 .node text {
@@ -112,14 +117,18 @@ Responsive SVG
 }
 
 .top-buffer {
-  margin-top: 3%;
+  margin-top: 2%;
 }
 
-.row.match-cols {
-    overflow: hidden; 
+.top-extra-buffer {
+  margin-top: 10%;
 }
 
-.row.match-cols [class*="col-"]{
-    margin-bottom: -99999px;
-    padding-bottom: 99999px;
+.container.panel-group {
+  margin-left: 20px;
+  margin-right: 0;
+}
+
+.active-network {
+  background: steelblue;
 }
